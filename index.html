@@ -68,6 +68,11 @@
             <div class="flex items-center text-red-400" id="error-box" style="visibility: hidden;">
                 <i class="fa-solid fa-bug mr-2"></i> Err: <span id="error-count" class="ml-1">0</span>
             </div>
+            <div id="default-pass-banner" class="hidden flex items-center text-xs text-yellow-400 space-x-2">
+                <i class="fa-solid fa-key"></i>
+                <span>Using default admin password.</span>
+                <button onclick="openAdminPassChange()" class="underline hover:text-yellow-300">Change now</button>
+            </div>
         </div>
         <button onclick="lockKiosk()" class="text-slate-600 hover:text-white transition"><i class="fa-solid fa-lock"></i> ADMIN</button>
     </div>
@@ -226,11 +231,41 @@
         </div>
     </div>
 
+    <!-- ADMIN PASSWORD CHANGE MODAL -->
+    <div id="admin-pass-change" class="hidden fixed inset-0 bg-black/80 backdrop-blur-md flex items-center justify-center z-50">
+        <div class="bg-slate-900 text-slate-100 p-8 rounded-2xl w-[380px] shadow-2xl relative border border-slate-700">
+            <button onclick="closeAdminPassChange()" class="absolute top-4 right-4 text-slate-500 hover:text-white">
+                <i class="fa-solid fa-xmark text-xl"></i>
+            </button>
+            <h2 class="text-xl font-bold mb-1 text-blue-400">Change Admin Password</h2>
+            <p class="text-xs text-slate-400 mb-5">This password is stored only on this device (browser local storage).</p>
+
+            <div class="space-y-3">
+                <div>
+                    <label class="block text-xs font-semibold text-slate-400 uppercase tracking-widest mb-1">New Password</label>
+                    <input id="admin-pass-new" type="password" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm outline-none focus:border-blue-500">
+                </div>
+                <div>
+                    <label class="block text-xs font-semibold text-slate-400 uppercase tracking-widest mb-1">Confirm Password</label>
+                    <input id="admin-pass-confirm" type="password" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm outline-none focus:border-blue-500">
+                </div>
+                <div id="admin-pass-change-error" class="text-xs text-red-400 font-semibold mt-1 hidden"></div>
+                <button onclick="saveAdminPassChange()" class="w-full mt-3 bg-blue-600 hover:bg-blue-500 text-white py-2.5 rounded-lg text-xs font-bold uppercase tracking-widest">
+                    Save Password
+                </button>
+                <p class="text-[11px] text-slate-500 mt-2">
+                    Tip: After saving, you will use this new password the next time you unlock the kiosk.
+                </p>
+            </div>
+        </div>
+    </div>
+
     <script>
         // ================= CONFIGURATION =================
         const SUPABASE_URL = 'https://beyblizvpzteiqyfxqzl.supabase.co';
         const SUPABASE_KEY = 'sb_publishable_-J9hWM7fFBc_bWSkQFK2cw_YTMXf1Rl';
-        const ADMIN_PASS = 'libcontrol00'; // Simple front-end admin password gate
+        const DEFAULT_ADMIN_PASS = 'libcontrol00'; // Default front-end admin password gate
+        let currentAdminPass = DEFAULT_ADMIN_PASS;
         const supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
 
         // ================= STATE =================
@@ -238,9 +273,20 @@
         let activeTransaction = null; // Stores book data during multi-step flow
         let isAdmin = false;
         let kioskLocked = true;
+        let adminFailedAttempts = 0;
 
         // ================= INITIALIZATION =================
         window.onload = () => {
+            // Load stored admin password if available
+            try {
+                const storedPass = window.localStorage.getItem('adminPass');
+                if (storedPass && typeof storedPass === 'string' && storedPass.length > 0) {
+                    currentAdminPass = storedPass;
+                }
+            } catch (e) {
+                // Ignore storage errors; fallback to default
+            }
+
             setInterval(updateClock, 1000);
             updateClock();
             checkNet();
@@ -648,6 +694,17 @@
 
             // Focus scanner so first scan works immediately
             document.getElementById('scanner').focus();
+
+            // If still using default password with no stored override, show banner suggesting change
+            const storedPass = (() => {
+                try { return window.localStorage.getItem('adminPass'); } catch (e) { return null; }
+            })();
+            if (currentAdminPass === DEFAULT_ADMIN_PASS && !storedPass) {
+                const banner = document.getElementById('default-pass-banner');
+                if (banner) {
+                    banner.classList.remove('hidden');
+                }
+            }
         }
 
         function lockKiosk() {
@@ -676,14 +733,83 @@
             if (!input) return;
 
             const value = input.value.trim();
-            if (value === ADMIN_PASS) {
+            if (value === currentAdminPass) {
+                adminFailedAttempts = 0;
                 enterKioskMode();
             } else {
+                adminFailedAttempts += 1;
                 if (errorBox) {
                     errorBox.classList.remove('hidden');
                 }
                 input.select();
             }
+        }
+
+        function openAdminPassChange() {
+            const modal = document.getElementById('admin-pass-change');
+            const err = document.getElementById('admin-pass-change-error');
+            if (modal) {
+                modal.classList.remove('hidden');
+            }
+            if (err) {
+                err.classList.add('hidden');
+                err.innerText = '';
+            }
+            const newInput = document.getElementById('admin-pass-new');
+            const confirmInput = document.getElementById('admin-pass-confirm');
+            if (newInput) {
+                newInput.value = '';
+                newInput.focus();
+            }
+            if (confirmInput) {
+                confirmInput.value = '';
+            }
+        }
+
+        function closeAdminPassChange() {
+            const modal = document.getElementById('admin-pass-change');
+            if (modal) {
+                modal.classList.add('hidden');
+            }
+        }
+
+        function saveAdminPassChange() {
+            const newInput = document.getElementById('admin-pass-new');
+            const confirmInput = document.getElementById('admin-pass-confirm');
+            const err = document.getElementById('admin-pass-change-error');
+
+            if (!newInput || !confirmInput || !err) return;
+
+            const newPass = newInput.value.trim();
+            const confirmPass = confirmInput.value.trim();
+
+            if (!newPass) {
+                err.innerText = 'New password cannot be empty.';
+                err.classList.remove('hidden');
+                return;
+            }
+            if (newPass !== confirmPass) {
+                err.innerText = 'Passwords do not match.';
+                err.classList.remove('hidden');
+                return;
+            }
+
+            try {
+                window.localStorage.setItem('adminPass', newPass);
+                currentAdminPass = newPass;
+            } catch (e) {
+                err.innerText = 'Unable to save password in this browser.';
+                err.classList.remove('hidden');
+                return;
+            }
+
+            // Hide default banner if visible
+            const banner = document.getElementById('default-pass-banner');
+            if (banner) {
+                banner.classList.add('hidden');
+            }
+
+            closeAdminPassChange();
         }
     </script>
 </body>
