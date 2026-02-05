@@ -1,0 +1,579 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Library Kiosk v3.0 (Points & Privacy)</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+    
+    <style>
+        body { -ms-overflow-style: none; scrollbar-width: none; overflow: hidden; }
+        body::-webkit-scrollbar { display: none; }
+        .glass { background: rgba(30, 41, 59, 0.7); backdrop-filter: blur(10px); }
+        .mask-text { letter-spacing: 2px; }
+        @keyframes pulse-border { 0% { border-color: rgba(59, 130, 246, 0.5); } 50% { border-color: rgba(59, 130, 246, 1); } 100% { border-color: rgba(59, 130, 246, 0.5); } }
+        .waiting-id { border: 4px solid #3b82f6; animation: pulse-border 1.5s infinite; }
+    </style>
+</head>
+<body class="bg-gray-900 h-screen font-sans text-white select-none">
+
+    <!-- 1. HEADER / STATUS BAR -->
+    <div class="h-16 bg-slate-800 flex justify-between items-center px-8 shadow-lg border-b border-slate-700 z-50 relative">
+        <div class="flex items-center space-x-8 text-lg font-mono text-slate-400">
+            <div id="clock" class="text-white font-bold tracking-wide">00:00</div>
+            <div id="net-status" class="flex items-center"><i class="fa-solid fa-circle-notch fa-spin mr-2"></i> Init</div>
+            <div class="flex items-center text-red-400" id="error-box" style="visibility: hidden;">
+                <i class="fa-solid fa-bug mr-2"></i> Err: <span id="error-count" class="ml-1">0</span>
+            </div>
+        </div>
+        <button onclick="exitKiosk()" class="text-slate-600 hover:text-white transition"><i class="fa-solid fa-lock"></i> ADMIN</button>
+    </div>
+
+    <!-- 2. MAIN SPLIT SCREEN -->
+    <div id="main-view" class="flex h-[calc(100vh-4rem)] relative">
+        
+        <!-- LEFT: ATTENDANCE (Blue) -->
+        <div id="panel-att" class="w-1/2 border-r border-slate-700 relative overflow-hidden flex flex-col justify-center items-center p-10 transition-all duration-300">
+            <i class="fa-solid fa-id-badge absolute -left-10 bottom-0 text-[15rem] text-blue-900/20 z-0"></i>
+            
+            <div class="z-10 text-center w-full max-w-lg">
+                <h2 class="text-4xl font-black text-blue-500 mb-2 uppercase tracking-widest">Attendance</h2>
+                <p class="text-slate-400 mb-8">Tap ID for Daily Points (+1)</p>
+                
+                <!-- Attendance Result Card -->
+                <div id="att-card" class="bg-slate-800/80 border border-slate-600 rounded-2xl p-6 min-h-[250px] flex flex-col justify-center items-center shadow-2xl backdrop-blur-sm">
+                    <i class="fa-solid fa-wifi fa-rotate-90 text-5xl text-slate-600 mb-4 animate-pulse"></i>
+                    <p class="text-slate-500 text-xl">Ready to Scan...</p>
+                </div>
+            </div>
+        </div>
+
+        <!-- RIGHT: BOOK TRANSACTIONS (Orange) -->
+        <div id="panel-book" class="w-1/2 relative overflow-hidden flex flex-col justify-center items-center p-10 transition-all duration-300">
+            <i class="fa-solid fa-book-open absolute -right-10 bottom-0 text-[15rem] text-orange-900/20 z-0"></i>
+            
+            <div class="z-10 text-center w-full max-w-lg">
+                <h2 class="text-4xl font-black text-orange-500 mb-2 uppercase tracking-widest">Library Books</h2>
+                <p class="text-slate-400 mb-8">Scan Book to Borrow/Return</p>
+                
+                <!-- Book Result Card -->
+                <div id="book-card" class="bg-slate-800/80 border border-slate-600 rounded-2xl p-6 min-h-[250px] flex flex-col justify-center items-center shadow-2xl backdrop-blur-sm">
+                    <i class="fa-solid fa-barcode text-5xl text-slate-600 mb-4"></i>
+                    <p class="text-slate-500 text-xl">Scan Book QR/ISBN</p>
+                </div>
+            </div>
+        </div>
+
+        <!-- TRANSACTION OVERLAY (When Book is Scanned) -->
+        <div id="trans-overlay" class="hidden absolute inset-0 bg-slate-900/95 z-40 flex flex-col items-center justify-center">
+            <div class="w-full max-w-4xl bg-slate-800 rounded-2xl shadow-2xl border border-slate-600 overflow-hidden flex">
+                <!-- Book Info -->
+                <div class="w-1/3 bg-slate-700 p-8 flex flex-col items-center text-center">
+                    <div class="w-32 h-48 bg-slate-600 rounded-lg shadow-inner mb-4 flex items-center justify-center">
+                        <i class="fa-solid fa-book text-4xl text-slate-400"></i>
+                    </div>
+                    <h3 id="tx-book-title" class="text-xl font-bold text-white mb-1">Book Title</h3>
+                    <p id="tx-book-isbn" class="text-sm text-slate-400 font-mono mb-4">ISBN</p>
+                    <div id="tx-book-status" class="px-3 py-1 bg-green-500/20 text-green-400 rounded-full text-xs font-bold uppercase">Available</div>
+                </div>
+                
+                <!-- Action Area -->
+                <div class="w-2/3 p-8 flex flex-col justify-center">
+                    <h2 class="text-2xl font-bold mb-6 border-b border-slate-600 pb-4">Select Action</h2>
+                    
+                    <!-- STEP 1: OPTIONS (AVAILABLE) -->
+                    <div id="opt-available" class="hidden grid grid-cols-2 gap-4">
+                        <button onclick="selectAction('read')" class="bg-blue-600 hover:bg-blue-500 p-6 rounded-xl text-left group transition">
+                            <div class="text-2xl mb-2"><i class="fa-solid fa-book-open-reader"></i></div>
+                            <div class="font-bold text-lg">Read Here</div>
+                            <div class="text-blue-200 text-sm group-hover:text-white">+1 Point • No Due Date</div>
+                        </button>
+                        <button onclick="selectAction('borrow')" class="bg-purple-600 hover:bg-purple-500 p-6 rounded-xl text-left group transition">
+                            <div class="text-2xl mb-2"><i class="fa-solid fa-bag-shopping"></i></div>
+                            <div class="font-bold text-lg">Borrow Book</div>
+                            <div class="text-purple-200 text-sm group-hover:text-white">+2 Points • 3 Days</div>
+                        </button>
+                    </div>
+
+                    <!-- STEP 1: OPTIONS (BORROWED) -->
+                    <div id="opt-borrowed" class="hidden grid grid-cols-2 gap-4">
+                        <button onclick="selectAction('return')" class="bg-green-600 hover:bg-green-500 p-6 rounded-xl text-left group transition">
+                            <div class="text-2xl mb-2"><i class="fa-solid fa-rotate-left"></i></div>
+                            <div class="font-bold text-lg">Return Book</div>
+                            <div class="text-green-200 text-sm group-hover:text-white">Check In</div>
+                        </button>
+                        <button id="btn-renew" onclick="selectAction('renew')" class="bg-orange-600 hover:bg-orange-500 p-6 rounded-xl text-left group transition opacity-50 cursor-not-allowed">
+                            <div class="text-2xl mb-2"><i class="fa-solid fa-calendar-plus"></i></div>
+                            <div class="font-bold text-lg">Renew</div>
+                            <div class="text-orange-200 text-sm group-hover:text-white">Only on Due Date</div>
+                        </button>
+                    </div>
+
+                    <!-- STEP 2: ID PROMPT -->
+                    <div id="step-scan-id" class="hidden text-center py-10">
+                        <div class="inline-block p-6 rounded-full bg-blue-500/10 mb-4 animate-bounce">
+                            <i class="fa-solid fa-id-card text-5xl text-blue-400"></i>
+                        </div>
+                        <h3 class="text-2xl font-bold text-white mb-2">Scan ID to Confirm</h3>
+                        <p class="text-slate-400">Tap your Student ID card to finish <span id="action-name" class="text-blue-400 font-bold uppercase">ACTION</span></p>
+                    </div>
+
+                    <!-- MESSAGES -->
+                    <div id="tx-message" class="hidden mt-4 p-4 rounded bg-red-500/20 text-red-400 border border-red-500/50 text-center font-bold">
+                        Penalty: ₱5.00 (Overdue)
+                    </div>
+
+                    <button onclick="cancelTransaction()" class="mt-auto self-end text-slate-500 hover:text-white text-sm uppercase font-bold tracking-widest pt-6">Cancel</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- BOTTOM CONTROLS -->
+        <div class="absolute bottom-8 w-full flex justify-center gap-4 pointer-events-none">
+            <button onclick="openRegModal()" class="pointer-events-auto bg-slate-800 hover:bg-slate-700 text-white px-8 py-3 rounded-full font-bold shadow-lg border border-slate-600 flex items-center transition">
+                <i class="fa-solid fa-user-plus mr-2"></i> Register New
+            </button>
+            <button onclick="openPhoneModal()" class="pointer-events-auto bg-slate-800 hover:bg-slate-700 text-white px-8 py-3 rounded-full font-bold shadow-lg border border-slate-600 flex items-center transition">
+                <i class="fa-solid fa-mobile-screen mr-2"></i> Phone Link
+            </button>
+        </div>
+        
+        <!-- GLOBAL INPUT (HIDDEN) -->
+        <input type="text" id="scanner" class="absolute opacity-0 top-0 left-0 w-full h-full cursor-none" autofocus>
+    </div>
+
+    <!-- 3. MODALS (Registration & QR) -->
+    
+    <!-- REGISTRATION MODAL -->
+    <div id="modal-reg" class="hidden fixed inset-0 bg-black/90 backdrop-blur-md flex items-center justify-center z-50">
+        <div class="bg-white text-gray-800 p-8 rounded-2xl w-[500px] shadow-2xl relative">
+            <button onclick="closeModals()" class="absolute top-4 right-4 text-gray-400 hover:text-gray-800"><i class="fa-solid fa-xmark text-2xl"></i></button>
+            
+            <h2 class="text-2xl font-bold mb-1 text-blue-600">Student Registration</h2>
+            <p class="text-gray-400 text-sm mb-6">All fields are required</p>
+
+            <div class="space-y-4">
+                <div class="relative">
+                    <i class="fa-solid fa-id-card absolute left-3 top-3.5 text-gray-400"></i>
+                    <input type="text" id="reg-rfid" placeholder="Scan RFID Card (Click & Scan)" class="w-full pl-10 p-3 border-2 border-yellow-200 bg-yellow-50 rounded-lg font-mono focus:border-blue-500 outline-none">
+                </div>
+                <div class="grid grid-cols-2 gap-4">
+                    <input type="text" id="reg-name" placeholder="Full Name (Last, First)" class="p-3 border rounded-lg bg-gray-50 focus:bg-white transition">
+                    <input type="text" id="reg-prog" placeholder="Program (e.g., BSIT)" class="p-3 border rounded-lg bg-gray-50 focus:bg-white transition">
+                </div>
+                <div class="relative">
+                    <i class="fa-solid fa-envelope absolute left-3 top-3.5 text-gray-400"></i>
+                    <input type="email" id="reg-email" placeholder="Email Address (for notifications)" class="w-full pl-10 p-3 border rounded-lg bg-gray-50 focus:bg-white transition">
+                </div>
+                
+                <button onclick="submitRegistration()" class="w-full bg-blue-600 hover:bg-blue-700 text-white p-4 rounded-xl font-bold shadow-lg mt-2 transition transform active:scale-95">
+                    CREATE ACCOUNT
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- PHONE QR MODAL -->
+    <div id="modal-qr" class="hidden fixed inset-0 bg-black/90 backdrop-blur-md flex items-center justify-center z-50">
+        <div class="bg-white text-gray-800 p-8 rounded-2xl w-80 text-center">
+            <h2 class="text-xl font-bold mb-4">Register on Mobile</h2>
+            <div id="qrcode-display" class="flex justify-center mb-6"></div>
+            <p class="text-xs text-gray-400 mb-4">Scan to open registration form</p>
+            <button onclick="closeModals()" class="w-full bg-gray-200 p-3 rounded-lg font-bold">Close</button>
+        </div>
+    </div>
+
+    <script>
+        // ================= CONFIGURATION =================
+        const SUPABASE_URL = 'https://YOUR_PROJECT_ID.supabase.co';
+        const SUPABASE_KEY = 'YOUR_ANON_KEY';
+        const supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+
+        // ================= STATE =================
+        let errorCount = 0;
+        let activeTransaction = null; // Stores book data during multi-step flow
+
+        // ================= INITIALIZATION =================
+        window.onload = () => {
+            setInterval(updateClock, 1000);
+            updateClock();
+            checkNet();
+            
+            // Generate QR
+            new QRCode(document.getElementById("qrcode-display"), {
+                text: window.location.href + "?mode=register", // Simulated URL parameter
+                width: 150,
+                height: 150
+            });
+
+            // Focus trap for scanner
+            document.addEventListener('click', (e) => {
+                if(document.getElementById('modal-reg').classList.contains('hidden')) {
+                    document.getElementById('scanner').focus();
+                }
+            });
+        };
+
+        // ================= UTILS =================
+        function updateClock() {
+            const now = new Date();
+            document.getElementById('clock').innerText = now.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'});
+        }
+
+        function checkNet() {
+            const el = document.getElementById('net-status');
+            if(navigator.onLine) el.innerHTML = '<i class="fa-solid fa-wifi text-green-500 mr-2"></i> Online';
+            else el.innerHTML = '<i class="fa-solid fa-ban text-red-500 mr-2"></i> Offline';
+        }
+
+        function maskName(name) {
+            // "REYES, JOSEMARI" -> "REYES, J******I"
+            if(!name) return "Unknown";
+            const parts = name.split(',');
+            if(parts.length < 2) return name; // Fallback
+            
+            const lastName = parts[0];
+            const firstName = parts[1].trim();
+            
+            if(firstName.length <= 2) return name;
+            
+            const maskedFirst = firstName.substring(0, 1) + 
+                              '*'.repeat(firstName.length - 2) + 
+                              firstName.substring(firstName.length - 1);
+            
+            return `<span class="mask-text">${lastName}, ${maskedFirst}</span>`;
+        }
+
+        function maskEmail(email) {
+            // "student@school.edu" -> "st***@school.edu"
+            if(!email) return "";
+            const [user, domain] = email.split('@');
+            if(user.length <= 2) return email;
+            return `${user.substring(0,2)}***@${domain}`;
+        }
+
+        // ================= MAIN SCANNER LOGIC =================
+        const scanner = document.getElementById('scanner');
+        scanner.addEventListener('keypress', async (e) => {
+            if (e.key === 'Enter') {
+                const code = scanner.value.trim();
+                scanner.value = '';
+                if(!code) return;
+
+                // 1. IF TRANSACTION IS ACTIVE (Waiting for ID)
+                if(activeTransaction && activeTransaction.step === 'wait_id') {
+                    await processTransactionID(code);
+                    return;
+                }
+
+                // 2. CHECK IF STUDENT (Attendance)
+                const { data: student } = await supabase.from('students').select('*').eq('rfid_tag', code).single();
+                if(student) {
+                    await processAttendance(student);
+                    return;
+                }
+
+                // 3. CHECK IF BOOK (Transaction Start)
+                const { data: book } = await supabase.from('books').select('*').eq('isbn', code).single();
+                if(book) {
+                    startBookTransaction(book);
+                    return;
+                }
+
+                // 4. UNKNOWN
+                handleError();
+            }
+        });
+
+        // ================= LOGIC: ATTENDANCE =================
+        async function processAttendance(student) {
+            const today = new Date().toISOString().split('T')[0];
+            
+            // Check if already logged today
+            const { data: existing } = await supabase
+                .from('logs')
+                .select('*')
+                .eq('student_rfid', student.rfid_tag)
+                .eq('log_type', 'attendance')
+                .gte('timestamp', today);
+
+            let msg = "Welcome Back!";
+            let pointsAdded = 0;
+
+            if(!existing || existing.length === 0) {
+                // First tap: Add Point
+                pointsAdded = 1;
+                const newPoints = (student.points || 0) + 1;
+                
+                await supabase.from('students').update({ points: newPoints }).eq('id', student.id);
+                await supabase.from('logs').insert({
+                    log_type: 'attendance',
+                    student_rfid: student.rfid_tag,
+                    description: 'Daily Attendance (+1 Pt)'
+                });
+                msg = "+1 POINT ADDED";
+            } else {
+                msg = "Already Logged In";
+            }
+
+            // Update UI
+            document.getElementById('att-card').innerHTML = `
+                <div class="flex items-center gap-4 mb-4">
+                    <img src="${student.photo_url}" class="w-20 h-20 rounded-full border-2 border-blue-400">
+                    <div class="text-left">
+                        <div class="text-xl font-bold text-blue-400">${maskName(student.full_name)}</div>
+                        <div class="text-sm text-slate-400">${student.program}</div>
+                        <div class="text-xs text-slate-500">${maskEmail(student.email)}</div>
+                    </div>
+                </div>
+                <div class="bg-blue-600/20 w-full py-3 rounded-lg border border-blue-500/30">
+                    <div class="text-3xl font-bold text-blue-400">${student.points + pointsAdded} <span class="text-sm text-blue-200">PTS</span></div>
+                    <div class="text-xs text-blue-300 uppercase tracking-widest mt-1">${msg}</div>
+                </div>
+                <div class="mt-2 text-xs text-slate-500">Time In: ${new Date().toLocaleTimeString()}</div>
+            `;
+
+            // Reset UI after 5s
+            setTimeout(() => {
+                document.getElementById('att-card').innerHTML = `
+                    <i class="fa-solid fa-wifi fa-rotate-90 text-5xl text-slate-600 mb-4 animate-pulse"></i>
+                    <p class="text-slate-500 text-xl">Ready to Scan...</p>
+                `;
+            }, 5000);
+        }
+
+        // ================= LOGIC: BOOK TRANSACTION =================
+        function startBookTransaction(book) {
+            activeTransaction = { book: book, step: 'select_action' };
+            
+            // Populate Modal
+            document.getElementById('tx-book-title').innerText = book.title;
+            document.getElementById('tx-book-isbn').innerText = book.isbn;
+            
+            const statusBadge = document.getElementById('tx-book-status');
+            const optAvail = document.getElementById('opt-available');
+            const optBor = document.getElementById('opt-borrowed');
+            
+            // Reset Styles
+            optAvail.classList.add('hidden');
+            optBor.classList.add('hidden');
+            document.getElementById('tx-message').classList.add('hidden');
+
+            if(book.status === 'Available') {
+                statusBadge.className = "px-3 py-1 bg-green-500/20 text-green-400 rounded-full text-xs font-bold uppercase";
+                statusBadge.innerText = "Available";
+                optAvail.classList.remove('hidden');
+            } else {
+                statusBadge.className = "px-3 py-1 bg-orange-500/20 text-orange-400 rounded-full text-xs font-bold uppercase";
+                statusBadge.innerText = "Borrowed";
+                optBor.classList.remove('hidden');
+                
+                // Check Renew Eligibility (Must be Due Date)
+                if(book.due_date) {
+                    const due = new Date(book.due_date).toDateString();
+                    const today = new Date().toDateString();
+                    const renewBtn = document.getElementById('btn-renew');
+                    
+                    if(due === today) {
+                        renewBtn.classList.remove('opacity-50', 'cursor-not-allowed');
+                        renewBtn.disabled = false;
+                    } else {
+                        renewBtn.classList.add('opacity-50', 'cursor-not-allowed');
+                        renewBtn.disabled = true;
+                    }
+                }
+            }
+
+            // Show Modal
+            document.getElementById('trans-overlay').classList.remove('hidden');
+        }
+
+        function selectAction(action) {
+            activeTransaction.action = action;
+            activeTransaction.step = 'wait_id';
+            
+            // UI Update
+            document.getElementById('opt-available').classList.add('hidden');
+            document.getElementById('opt-borrowed').classList.add('hidden');
+            document.getElementById('step-scan-id').classList.remove('hidden');
+            document.getElementById('action-name').innerText = action;
+            
+            // Visual cue
+            document.getElementById('trans-overlay').classList.add('waiting-id');
+        }
+
+        async function processTransactionID(rfid) {
+            // Verify Student
+            const { data: student } = await supabase.from('students').select('*').eq('rfid_tag', rfid).single();
+            
+            if(!student) {
+                alert("ID Not Recognized. Try again.");
+                return;
+            }
+
+            // Execute Logic based on Action
+            const book = activeTransaction.book;
+            const action = activeTransaction.action;
+            let pointsEarned = 0;
+            let logDesc = "";
+            let newStatus = book.status;
+            let newDueDate = book.due_date;
+            let newBorrower = book.borrowed_by;
+
+            if (action === 'read') {
+                // READ HERE: +1 Point, Log it, Status stays Available (or 'In Use')
+                pointsEarned = 1;
+                logDesc = "Reading in Library";
+                // Optionally set status to 'In Use' temporarily
+            } 
+            else if (action === 'borrow') {
+                // BORROW: +2 Points, Status Borrowed, Due +3 Days
+                pointsEarned = 2;
+                newStatus = 'Borrowed';
+                newBorrower = student.rfid_tag;
+                
+                const d = new Date();
+                d.setDate(d.getDate() + 3);
+                newDueDate = d.toISOString();
+                
+                logDesc = `Borrowed (Due: ${d.toLocaleDateString()})`;
+            }
+            else if (action === 'return') {
+                // RETURN: Check Penalty
+                newStatus = 'Available';
+                newBorrower = null;
+                newDueDate = null;
+                logDesc = "Returned Book";
+
+                if(book.due_date && new Date() > new Date(book.due_date)) {
+                    // Late!
+                    logDesc += " (LATE - Penalty Applied)";
+                    document.getElementById('tx-message').classList.remove('hidden');
+                    document.getElementById('tx-message').innerText = "LATE FEE: ₱5.00";
+                    // In real app, deduct wallet balance here
+                }
+            }
+            else if (action === 'renew') {
+                // RENEW: Extend 3 Days
+                const d = new Date();
+                d.setDate(d.getDate() + 3);
+                newDueDate = d.toISOString();
+                logDesc = `Renewed (New Due: ${d.toLocaleDateString()})`;
+            }
+
+            // DB UPDATES (Parallel for speed)
+            const p1 = supabase.from('books').update({ 
+                status: newStatus, 
+                due_date: newDueDate, 
+                borrowed_by: newBorrower 
+            }).eq('id', book.id);
+
+            const p2 = supabase.from('students').update({ 
+                points: (student.points || 0) + pointsEarned 
+            }).eq('id', student.id);
+
+            const p3 = supabase.from('logs').insert({
+                log_type: action,
+                description: logDesc,
+                student_rfid: student.rfid_tag,
+                book_isbn: book.isbn,
+                points_earned: pointsEarned // Assume column exists or put in description
+            });
+
+            await Promise.all([p1, p2, p3]);
+
+            // SUCCESS SCREEN
+            showTransactionSuccess(student, pointsEarned, logDesc);
+        }
+
+        function showTransactionSuccess(student, points, desc) {
+            document.getElementById('step-scan-id').innerHTML = `
+                <div class="text-green-500 text-6xl mb-4"><i class="fa-solid fa-circle-check"></i></div>
+                <h2 class="text-3xl font-bold text-white mb-2">Success!</h2>
+                <p class="text-lg text-slate-300 mb-6">${desc}</p>
+                <div class="bg-slate-700/50 p-4 rounded-xl inline-block min-w-[200px]">
+                    <div class="text-sm text-slate-400">Total Points</div>
+                    <div class="text-3xl font-bold text-blue-400">${(student.points || 0) + points}</div>
+                    ${points > 0 ? `<div class="text-xs text-green-400 font-bold mt-1">+${points} EARNED</div>` : ''}
+                </div>
+                <div class="mt-6 text-sm text-slate-500">
+                    <div>Notif sent to: ${maskEmail(student.email)}</div>
+                </div>
+            `;
+            
+            document.getElementById('trans-overlay').classList.remove('waiting-id');
+
+            // Close automatically
+            setTimeout(() => {
+                cancelTransaction();
+            }, 4000);
+        }
+
+        function cancelTransaction() {
+            activeTransaction = null;
+            document.getElementById('trans-overlay').classList.add('hidden');
+            // Reset HTML of steps for next time
+            document.getElementById('step-scan-id').innerHTML = `
+                <div class="inline-block p-6 rounded-full bg-blue-500/10 mb-4 animate-bounce">
+                    <i class="fa-solid fa-id-card text-5xl text-blue-400"></i>
+                </div>
+                <h3 class="text-2xl font-bold text-white mb-2">Scan ID to Confirm</h3>
+                <p class="text-slate-400">Tap your Student ID card to finish <span id="action-name" class="text-blue-400 font-bold uppercase">ACTION</span></p>
+            `;
+            document.getElementById('step-scan-id').classList.add('hidden');
+        }
+
+        function handleError() {
+            errorCount++;
+            document.getElementById('error-box').style.visibility = 'visible';
+            document.getElementById('error-count').innerText = errorCount;
+            // Red flash
+            document.body.style.backgroundColor = '#450a0a';
+            setTimeout(() => document.body.style.backgroundColor = '#0f172a', 300);
+        }
+
+        // ================= MODAL HANDLERS =================
+        function openRegModal() {
+            document.getElementById('modal-reg').classList.remove('hidden');
+            document.getElementById('reg-rfid').focus();
+        }
+        function openPhoneModal() { document.getElementById('modal-qr').classList.remove('hidden'); }
+        function closeModals() {
+            document.getElementById('modal-reg').classList.add('hidden');
+            document.getElementById('modal-qr').classList.add('hidden');
+            document.getElementById('scanner').focus();
+        }
+
+        async function submitRegistration() {
+            const rfid = document.getElementById('reg-rfid').value;
+            const name = document.getElementById('reg-name').value;
+            const prog = document.getElementById('reg-prog').value;
+            const email = document.getElementById('reg-email').value;
+
+            if(!rfid || !name || !email) return alert("All fields required");
+
+            const { error } = await supabase.from('students').insert({
+                rfid_tag: rfid,
+                full_name: name,
+                program: prog,
+                email: email,
+                points: 0
+            });
+
+            if(error) alert(error.message);
+            else {
+                alert("Account Created!");
+                closeModals();
+            }
+        }
+
+        function exitKiosk() {
+            const pass = prompt("Admin Password:");
+            if(pass === 'libcontrol00') location.reload(); // Simple protection
+        }
+    </script>
+</body>
+</html>
